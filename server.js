@@ -10,44 +10,79 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173'
+  origin: [
+    'http://localhost:5173',
+    'https://your-netlify-app.netlify.app',
+    /\.vercel\.app$/,
+    /\.netlify\.app$/
+  ],
+  credentials: false
 }));
 app.use(express.json({ limit: '10mb' }));
+// MongoDB Connection with connection pooling for serverless
+let cachedDb = null;
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('MongoDB Connected'))
-.catch(err => console.error('MongoDB connection error:', err));
-
-// Helper function to update daily analytics
-const updateAnalytics = async (projectData) => {
-  const today = new Date().toISOString().split('T')[0];
-  
-  try {
-    await Analytics.findOneAndUpdate(
-      { date: { $gte: new Date(today) } },
-      {
-        $inc: {
-          aiCalls: 1,
-          totalTokensUsed: projectData.analytics?.tokensUsed || 0,
-          totalProjects: 1
-        },
-        $addToSet: {
-          popularEntities: {
-            $each: projectData.requirements?.entities?.map(entity => ({ entity, count: 1 })) || []
-          }
-        }
-      },
-      { upsert: true, new: true }
-    );
-  } catch (error) {
-    console.error('Analytics update failed:', error);
+async function connectToDatabase() {
+  if (cachedDb) {
+    return cachedDb;
   }
-};
 
+  try {
+    const connection = await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      maxPoolSize: 1, // Limit pool size for serverless
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    
+    cachedDb = connection;
+    console.log('MongoDB Connected');
+    return connection;
+  } catch (error) {
+    console.error('MongoDB connection error:', error);
+    throw error;
+  }
+}
+
+// Middleware to ensure DB connection
+app.use(async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (error) {
+    res.status(500).json({ error: 'Database connection failed' });
+  }
+});
+
+// Import models after connection setup
+const Project = require('./models/Project');
+const Analytics = require('./models/Analytics');
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'MiniAIAppBuilder API',
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV
+  });
+});
+
+app.get('/api', (req, res) => {
+  res.json({ 
+    message: 'Requirement Portal API v1.0',
+    endpoints: [
+      'GET /api/projects',
+      'POST /api/projects',
+      'GET /api/projects/:id',
+      'GET /api/analytics',
+      'POST /api/projects/:id/like'
+    ]
+  });
+});
+
+// API routes here...
 // ROUTES
 
 // Create new project (public endpoint)
@@ -216,9 +251,22 @@ app.post('/api/projects/:id/like', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
+});
+
+
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 export default app;
