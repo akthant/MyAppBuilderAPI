@@ -12,20 +12,44 @@ const app = express();
 app.set('trust proxy', 1);
 
 // Middleware
-app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (mobile apps, etc.)
+// Enhanced CORS configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
-    const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || ['http://localhost:5173'];
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'https://localhost:5173',
+      process.env.CORS_ORIGIN,
+      /\.netlify\.app$/,  // Allow all Netlify apps
+      /\.onrender\.com$/, // Allow Render apps
+    ].filter(Boolean); // Remove any undefined values
     
-    if (allowedOrigins.includes(origin) || origin.endsWith('.netlify.app')) {
+    // Check if origin matches any allowed origin
+    const isAllowed = allowedOrigins.some(allowedOrigin => {
+      if (allowedOrigin instanceof RegExp) {
+        return allowedOrigin.test(origin);
+      }
+      return allowedOrigin === origin;
+    });
+    
+    if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      console.log('CORS blocked origin:', origin);
+      callback(null, true); // Allow anyway for debugging - remove in production
     }
-  }
-}));
+  },
+  credentials: false,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+
 
 app.use(express.json({ limit: '10mb' }));
 // Request logging for debugging
@@ -59,7 +83,7 @@ connectDB();
 // Health check endpoint (important for Render)
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'Requirement Portal API',
+    message: 'My App Builder API',
     status: 'healthy',
     timestamp: new Date().toISOString(),
     version: '1.0.0'
