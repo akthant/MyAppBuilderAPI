@@ -126,10 +126,34 @@ app.get('/health', async (req, res) => {
     });
   }
 });
+// Helper function to update daily analytics
+const updateAnalytics = async (projectData) => {
+  const today = new Date().toISOString().split('T')[0];
+  
+  try {
+    await Analytics.findOneAndUpdate(
+      { date: { $gte: new Date(today) } },
+      {
+        $inc: {
+          aiCalls: 1,
+          totalTokensUsed: projectData.analytics?.tokensUsed || 0,
+          totalProjects: 1
+        },
+        $addToSet: {
+          popularEntities: {
+            $each: projectData.requirements?.entities?.map(entity => ({ entity, count: 1 })) || []
+          }
+        }
+      },
+      { upsert: true, new: true }
+    );
+  } catch (error) {
+    console.error('Analytics update failed:', error);
+  }
+};
 
 // API routes here...
 // ROUTES
-
 // Create new project (public endpoint)
 app.post('/api/projects', async (req, res) => {
   try {
