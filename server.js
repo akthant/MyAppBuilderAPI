@@ -8,78 +8,72 @@ import connectDatabase from './config/database.js';
 dotenv.config();
 const app = express();
 
+// Trust proxy (important for Render)
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'https://your-netlify-app.netlify.app',
-    /\.vercel\.app$/,
-    /\.netlify\.app$/
-  ],
-  credentials: false
+  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:5173'],
+  credentials: false,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 app.use(express.json({ limit: '10mb' }));
-// MongoDB Connection with connection pooling for serverless
-let cachedDb = null;
+// Request logging for debugging
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    next();
+  });
+}
 
-async function connectToDatabase() {
-  if (cachedDb) {
-    return cachedDb;
-  }
-
+// MongoDB Connection with retry logic
+const connectDB = async () => {
   try {
-    const connection = await mongoose.connect(process.env.MONGODB_URI, {
+    await mongoose.connect(process.env.MONGODB_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
-      maxPoolSize: 1, // Limit pool size for serverless
+      maxPoolSize: 10,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
     });
-    
-    cachedDb = connection;
-    console.log('MongoDB Connected');
-    return connection;
+    console.log('MongoDB Connected Successfully');
   } catch (error) {
     console.error('MongoDB connection error:', error);
-    throw error;
+    // Retry connection after 5 seconds
+    setTimeout(connectDB, 5000);
   }
-}
+};
 
-// Middleware to ensure DB connection
-app.use(async (req, res, next) => {
-  try {
-    await connectToDatabase();
-    next();
-  } catch (error) {
-    res.status(500).json({ error: 'Database connection failed' });
-  }
-});
+connectDB();
 
-// Import models after connection setup
-const Project = require('./models/Project');
-const Analytics = require('./models/Analytics');
-
-// Health check endpoint
+// Health check endpoint (important for Render)
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'MiniAIAppBuilder API',
+    message: 'Requirement Portal API',
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV
+    version: '1.0.0'
   });
 });
 
-app.get('/api', (req, res) => {
-  res.json({ 
-    message: 'Requirement Portal API v1.0',
-    endpoints: [
-      'GET /api/projects',
-      'POST /api/projects',
-      'GET /api/projects/:id',
-      'GET /api/analytics',
-      'POST /api/projects/:id/like'
-    ]
-  });
+// API health check
+app.get('/health', async (req, res) => {
+  try {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    res.json({
+      status: 'healthy',
+      database: dbStatus,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
 });
 
 // API routes here...
@@ -252,21 +246,36 @@ app.post('/api/projects/:id/like', async (req, res) => {
 });
 
 // 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
-});
-
-
-if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 3001;
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+app.use('/api/', (req, res) => {
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.originalUrl,
+    timestamp: new Date().toISOString()
   });
-}
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err.stack);
+  res.status(500).json({ 
+    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
+    timestamp: new Date().toISOString()
+  });
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  mongoose.connection.close(() => {
+    console.log('MongoDB connection closed');
+    process.exit(0);
+  });
+});
+
 export default app;
