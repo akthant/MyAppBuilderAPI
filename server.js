@@ -39,7 +39,7 @@ const corsOptions = {
       callback(null, true);
     } else {
       console.log('CORS blocked origin:', origin);
-      callback(null, true); // Allow anyway for debugging - remove in production
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: false,
@@ -48,19 +48,25 @@ const corsOptions = {
   optionsSuccessStatus: 200
 };
 
-app.use(cors(corsOptions));
-
-// Alternative: Simple CORS for debugging (use this temporarily)
+// Apply main CORS middleware
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
+  cors(corsOptions)(req, res, (err) => {
+    if (err) {
+      console.warn('CORS validation failed, checking preflight fallback…');
+
+      // Handle preflight (OPTIONS) with permitting fallback
+      if (req.method === 'OPTIONS') {
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+        return res.sendStatus(200);
+      }
+
+      // Non-preflight requests that fail CORS → block
+      return res.status(403).json({ error: 'CORS not allowed for this origin' });
+    }
     next();
-  }
+   });
 });
 
 // Add request logging to debug issues
